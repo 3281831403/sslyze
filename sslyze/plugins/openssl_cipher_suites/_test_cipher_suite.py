@@ -32,9 +32,28 @@ class CipherSuiteRejectedByServer:
     error_message: str
 
 
+@dataclass(frozen=True)
+class CipherSuiteNotTested:
+    """The cipher suite could not be tested, as no conclusion could be reached after retrying.
+
+    This is different from CipherSuiteRejectedByServer: the server did not explicitly reject the cipher suite; instead
+    the TLS handshake kept timing out, which means it is unknown whether the server supports this cipher suite or not.
+
+    Attributes:
+        cipher_suite: The cipher suite that SSLyze was unable to test.
+        error_message: The error message from the last failed attempt at testing this cipher suite.
+    """
+
+    cipher_suite: CipherSuite
+    error_message: str
+
+
+_CipherSuiteTestResult = Union[CipherSuiteAcceptedByServer, CipherSuiteRejectedByServer, CipherSuiteNotTested]
+
+
 def connect_with_cipher_suite(
     server_connectivity_info: ServerConnectivityInfo, tls_version: TlsVersionEnum, cipher_suite: CipherSuite
-) -> Union[CipherSuiteAcceptedByServer, CipherSuiteRejectedByServer]:
+) -> _CipherSuiteTestResult:
     """Initiates a SSL handshake with the server using the SSL version and the cipher suite specified."""
     requires_legacy_openssl = True
     if tls_version == TlsVersionEnum.TLS_1_2:
@@ -43,40 +62,58 @@ def connect_with_cipher_suite(
     elif tls_version == TlsVersionEnum.TLS_1_3:
         requires_legacy_openssl = False
 
-    ssl_connection = server_connectivity_info.get_preconfigured_tls_connection(
-        override_tls_version=tls_version, should_use_legacy_openssl=requires_legacy_openssl
-    )
-    _set_cipher_suite_string(tls_version, cipher_suite.openssl_name, ssl_connection.ssl_client)
+    # If the TLS handshake times out, we cannot tell whether the server rejected the cipher suite or whether the
+    # timeout was caused by a network issue; retry a few times before giving up.
+    # This matches the retry behavior used when establishing the underlying network connection.
+    max_attempts_nb = server_connectivity_info.network_configuration.network_max_retries
+    if max_attempts_nb < 1:
+        max_attempts_nb = 1
 
-    ephemeral_key = None
-    try:
-        # Perform the SSL handshake
-        ssl_connection.connect()
-        ephemeral_key = ssl_connection.ssl_client.get_ephemeral_key()
+    last_timeout_error: Optional[TlsHandshakeTimedOut] = None
+    for _ in range(max_attempts_nb):
+        # A new connection is needed for every attempt
+        ssl_connection = server_connectivity_info.get_preconfigured_tls_connection(
+            override_tls_version=tls_version, should_use_legacy_openssl=requires_legacy_openssl
+        )
 
-    except ServerTlsConfigurationNotSupported:
-        # SSLyze rejected the handshake because the server's DH config was too insecure; this means the
-        # cipher suite is actually supported
-        pass
+        # Always only enable the cipher suite to test, including on retries; otherwise OpenSSL would fall back to its
+        # default cipher list and we could end up testing a different cipher suite than the one we're trying to test
+        _set_cipher_suite_string(tls_version, cipher_suite.openssl_name, ssl_connection.ssl_client)
 
-    except ClientCertificateRequested:
-        # When the handshake failed due to ClientCertificateRequested
-        ephemeral_key = ssl_connection.ssl_client.get_ephemeral_key()
-        pass
+        ephemeral_key = None
+        try:
+            # Perform the SSL handshake
+            ssl_connection.connect()
+            ephemeral_key = ssl_connection.ssl_client.get_ephemeral_key()
 
-    except ServerRejectedTlsHandshake as e:
-        return CipherSuiteRejectedByServer(cipher_suite=cipher_suite, error_message=e.error_message)
+        except ServerTlsConfigurationNotSupported:
+            # SSLyze rejected the handshake because the server's DH config was too insecure; this means the
+            # cipher suite is actually supported
+            pass
 
-    except TlsHandshakeTimedOut as e:
-        # Sometimes triggered by servers that don't support (at all) a specific version of TLS
-        # Amazon Cloudfront does that with TLS 1.3
-        # There's no easy way to differentiate this error from a network glitch/timeout
-        return CipherSuiteRejectedByServer(cipher_suite=cipher_suite, error_message=e.error_message)
+        except ClientCertificateRequested:
+            # When the handshake failed due to ClientCertificateRequested
+            ephemeral_key = ssl_connection.ssl_client.get_ephemeral_key()
+            pass
 
-    finally:
-        ssl_connection.close()
+        except ServerRejectedTlsHandshake as e:
+            # The server explicitly rejected the cipher suite; do not retry
+            return CipherSuiteRejectedByServer(cipher_suite=cipher_suite, error_message=e.error_message)
 
-    return CipherSuiteAcceptedByServer(cipher_suite=cipher_suite, ephemeral_key=ephemeral_key)
+        except TlsHandshakeTimedOut as e:
+            # Retry: we cannot tell yet whether the server rejected the cipher suite or whether the timeout was caused
+            # by a network issue. Amazon Cloudfront with TLS 1.3 and servers that silently drop TLS records trigger this.
+            last_timeout_error = e
+            continue
+
+        finally:
+            ssl_connection.close()
+
+        return CipherSuiteAcceptedByServer(cipher_suite=cipher_suite, ephemeral_key=ephemeral_key)
+
+    # All attempts timed out: we could NOT test this cipher suite
+    assert last_timeout_error is not None
+    return CipherSuiteNotTested(cipher_suite=cipher_suite, error_message=last_timeout_error.error_message)
 
 
 def _set_cipher_suite_string(tls_version: TlsVersionEnum, cipher_suite_str: str, ssl_client: BaseSslClient) -> None:

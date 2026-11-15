@@ -209,7 +209,7 @@
       "type": "object"
     },
     "CipherSuitesScanResultAsJson": {
-      "description": "The result of testing a server for cipher suites with a specific version of SSL/TLS.\n\nAttributes:\n    tls_version_used: The SSL/TLS version used to connect to the server.\n    accepted_ciphers: The list of cipher suites supported supported by both SSLyze and the server.\n    rejected_ciphers: The list of cipher suites supported by SSLyze that were rejected by the server.",
+      "description": "The result of testing a server for cipher suites with a specific version of SSL/TLS.\n\nAttributes:\n    tls_version_used: The SSL/TLS version used to connect to the server.\n    accepted_cipher_suites: The list of cipher suites supported supported by both SSLyze and the server.\n    rejected_cipher_suites: The list of cipher suites supported by SSLyze that were rejected by the server.\n    untested_cipher_suites: The list of cipher suites that SSLyze was unable to test because the TLS handshake\n        kept timing out. The server may or may not support these cipher suites.",
       "properties": {
         "tls_version_used": {
           "title": "Tls Version Used",
@@ -231,6 +231,13 @@
             "$ref": "#/$defs/_CipherSuiteRejectedByServerAsJson"
           },
           "title": "Rejected Cipher Suites",
+          "type": "array"
+        },
+        "untested_cipher_suites": {
+          "items": {
+            "$ref": "#/$defs/_CipherSuiteNotTestedAsJson"
+          },
+          "title": "Untested Cipher Suites",
           "type": "array"
         }
       },
@@ -1465,6 +1472,24 @@
       "title": "_CipherSuiteAsJson",
       "type": "object"
     },
+    "_CipherSuiteNotTestedAsJson": {
+      "description": "The cipher suite could not be tested, as no conclusion could be reached after retrying.\n\nThis is different from CipherSuiteRejectedByServer: the server did not explicitly reject the cipher suite; instead\nthe TLS handshake kept timing out, which means it is unknown whether the server supports this cipher suite or not.\n\nAttributes:\n    cipher_suite: The cipher suite that SSLyze was unable to test.\n    error_message: The error message from the last failed attempt at testing this cipher suite.",
+      "properties": {
+        "cipher_suite": {
+          "$ref": "#/$defs/_CipherSuiteAsJson"
+        },
+        "error_message": {
+          "title": "Error Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cipher_suite",
+        "error_message"
+      ],
+      "title": "_CipherSuiteNotTestedAsJson",
+      "type": "object"
+    },
     "_CipherSuiteRejectedByServerAsJson": {
       "properties": {
         "cipher_suite": {
@@ -2208,7 +2233,7 @@
       "type": "string"
     },
     "sslyze_version": {
-      "default": "6.3.0",
+      "default": "6.3.1",
       "title": "Sslyze Version",
       "type": "string"
     },

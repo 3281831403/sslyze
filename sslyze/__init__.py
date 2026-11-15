@@ -58,6 +58,7 @@ from sslyze.plugins.openssl_cipher_suites.implementation import CipherSuitesScan
 from sslyze.plugins.openssl_cipher_suites._test_cipher_suite import (
     CipherSuiteAcceptedByServer,
     CipherSuiteRejectedByServer,
+    CipherSuiteNotTested,
 )
 from nassl.ephemeral_key_info import EphemeralKeyInfo
 from sslyze.plugins.openssl_cipher_suites.cipher_suites import CipherSuite

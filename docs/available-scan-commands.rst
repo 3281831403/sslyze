@@ -57,6 +57,7 @@ Result class
 .. autoclass:: CipherSuitesScanResult
 .. autoclass:: CipherSuiteRejectedByServer
 .. autoclass:: CipherSuiteAcceptedByServer
+.. autoclass:: CipherSuiteNotTested
 .. autoclass:: EphemeralKeyInfo
 .. autoclass:: CipherSuite
 .. autoclass:: TlsVersionEnum

@@ -1,13 +1,15 @@
 from operator import attrgetter
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sslyze.connection_helpers.tls_connection import NoCiphersAvailableBugInSSlyze
+from sslyze.errors import TlsHandshakeTimedOut
 from sslyze.plugins.openssl_cipher_suites._cli_connector import _CipherSuitesCliConnector
 from sslyze.plugins.openssl_cipher_suites._test_cipher_suite import (
     connect_with_cipher_suite,
     CipherSuiteRejectedByServer,
     CipherSuiteAcceptedByServer,
+    CipherSuiteNotTested,
 )
 from sslyze.plugins.openssl_cipher_suites.cipher_suites import CipherSuitesRepository
 from sslyze.plugins.plugin_base import (
@@ -30,13 +32,17 @@ class CipherSuitesScanResult(ScanCommandResult):
 
     Attributes:
         tls_version_used: The SSL/TLS version used to connect to the server.
-        accepted_ciphers: The list of cipher suites supported supported by both SSLyze and the server.
-        rejected_ciphers: The list of cipher suites supported by SSLyze that were rejected by the server.
+        accepted_cipher_suites: The list of cipher suites supported supported by both SSLyze and the server.
+        rejected_cipher_suites: The list of cipher suites supported by SSLyze that were rejected by the server.
+        untested_cipher_suites: The list of cipher suites that SSLyze was unable to test because the TLS handshake
+            kept timing out. The server may or may not support these cipher suites.
     """
 
     tls_version_used: TlsVersionEnum
     accepted_cipher_suites: List[CipherSuiteAcceptedByServer]
     rejected_cipher_suites: List[CipherSuiteRejectedByServer]
+    # Always populated; empty if every cipher suite could be tested
+    untested_cipher_suites: List[CipherSuiteNotTested] = field(default_factory=list)
 
     @property
     def is_tls_version_supported(self) -> bool:
@@ -112,6 +118,7 @@ class _CipherSuitesScanImplementation(ScanCommandImplementation[CipherSuitesScan
 
         accepted_cipher_suites = []
         rejected_cipher_suites = []
+        untested_cipher_suites = []
         for completed_job in scan_job_results:
             try:
                 cipher_suite_result = completed_job.get_result()
@@ -125,18 +132,34 @@ class _CipherSuitesScanImplementation(ScanCommandImplementation[CipherSuitesScan
                 accepted_cipher_suites.append(cipher_suite_result)
             elif isinstance(cipher_suite_result, CipherSuiteRejectedByServer):
                 rejected_cipher_suites.append(cipher_suite_result)
+            elif isinstance(cipher_suite_result, CipherSuiteNotTested):
+                untested_cipher_suites.append(cipher_suite_result)
             else:
                 raise ValueError("Should never happen")
+
+        # If no cipher suite could be tested at all, we cannot conclude anything about this TLS version; report this
+        # as a connectivity issue instead of pretending that the server rejected all the cipher suites
+        if untested_cipher_suites and not accepted_cipher_suites and not rejected_cipher_suites:
+            raise TlsHandshakeTimedOut(
+                server_location=server_info.server_location,
+                network_configuration=server_info.network_configuration,
+                error_message=(
+                    f"Connection to server timed out during the TLS handshake for all"
+                    f" {len(untested_cipher_suites)} cipher suites"
+                ),
+            )
 
         # Sort all the lists
         accepted_cipher_suites.sort(key=attrgetter("cipher_suite.name"), reverse=True)
         rejected_cipher_suites.sort(key=attrgetter("cipher_suite.name"), reverse=True)
+        untested_cipher_suites.sort(key=attrgetter("cipher_suite.name"), reverse=True)
 
         # Generate the results
         return CipherSuitesScanResult(
             tls_version_used=cls._tls_version,
             accepted_cipher_suites=accepted_cipher_suites,
             rejected_cipher_suites=rejected_cipher_suites,
+            untested_cipher_suites=untested_cipher_suites,
         )
 
 
